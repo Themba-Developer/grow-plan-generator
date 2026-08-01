@@ -1,4 +1,4 @@
-import logo from "@/assets/black-r-logo.png";
+const logo = "/__l5e/assets-v1/a66a6677-da2f-47ac-8b79-0dc2b9f5882a/black-r-logo.png";
 import { cn } from "@/lib/utils";
 
 export function BrandMark({
