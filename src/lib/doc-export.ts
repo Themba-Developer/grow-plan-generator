@@ -143,10 +143,16 @@ function docxTable(rows: string[][]) {
                 borders,
                 width: { size: columnWidth, type: WidthType.DXA },
                 margins: { top: 80, bottom: 80, left: 120, right: 120 },
-                shading:
-                  rowIndex === 0
-                    ? { fill: "F2F2F2", type: ShadingType.CLEAR, color: "auto" }
-                    : undefined,
+                ...(rowIndex === 0
+                  ? {
+                      shading: {
+                        fill: "F2F2F2",
+                        type: ShadingType.CLEAR,
+                        color: "auto",
+                      },
+                    }
+                  : {}),
+
                 children: [
                   new Paragraph({
                     children: inlineRuns(value, { bold: rowIndex === 0, size: 20 }),
