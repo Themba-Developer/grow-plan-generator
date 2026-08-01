@@ -44,7 +44,7 @@ export const Route = createFileRoute("/api/chat")({
         const result = streamText({
           model: gateway(CHAT_MODEL),
           system: SYSTEM_PROMPT,
-          messages: convertToModelMessages(uiMessages),
+          messages: await convertToModelMessages(uiMessages),
           onError: ({ error }) => console.error("[chat] stream error", error),
         });
 
