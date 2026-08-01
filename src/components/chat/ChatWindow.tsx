@@ -90,6 +90,17 @@ export function ChatWindow({
     textareaRef.current?.focus();
   }, [threadId, status]);
 
+  // Send the message that created this thread on the new-chat screen.
+  useEffect(() => {
+    if (!threadId) return;
+    const key = `blackr:pending:${threadId}`;
+    const pending = sessionStorage.getItem(key);
+    if (!pending) return;
+    sessionStorage.removeItem(key);
+    void sendMessage({ text: pending });
+  }, [threadId, sendMessage]);
+
+
   const brief = useMemo(() => {
     const texts = messages
       .filter((message) => message.role === "user")
