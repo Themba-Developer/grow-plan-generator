@@ -35,14 +35,13 @@ export function logoMime(dataUrl: string) {
   return /^data:([^;]+);/.exec(dataUrl)?.[1] ?? "image/png";
 }
 
-export type DocxImageType = "png" | "jpg" | "gif" | "bmp" | "svg";
+export type DocxImageType = "png" | "jpg" | "gif" | "bmp";
 
 export function docxImageType(dataUrl: string): DocxImageType {
   const mime = logoMime(dataUrl);
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
   if (mime.includes("gif")) return "gif";
   if (mime.includes("bmp")) return "bmp";
-  if (mime.includes("svg")) return "svg";
   return "png";
 }
 

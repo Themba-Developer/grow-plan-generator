@@ -332,7 +332,7 @@ export async function markdownToDocxBlob(args: {
       children.push(
         new Paragraph({
           spacing: { after: 90 },
-          indent: entry.kind === "h2" ? { left: 360 } : undefined,
+          ...(entry.kind === "h2" ? { indent: { left: 360 } } : {}),
           children: [
             new TextRun({
               text: stripMarks(entry.text),
