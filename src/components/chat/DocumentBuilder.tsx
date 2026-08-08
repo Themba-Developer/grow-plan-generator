@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, FileText, Loader2, RefreshCw } from "lucide-react";
+import { Download, FileText, ImagePlus, Loader2, RefreshCw, X } from "lucide-react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -22,6 +22,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { createOutline, createSection } from "@/lib/docgen.functions";
 import { markdownToDocxBlob, markdownToPdfBlob, downloadBlob, safeFilename } from "@/lib/doc-export";
+import { EMPTY_BRANDING, readLogoFile, type Branding } from "@/lib/doc-branding";
+import { Input } from "@/components/ui/input";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 
@@ -51,6 +53,8 @@ export function DocumentBuilder({
   const [current, setCurrent] = useState("");
   const [markdown, setMarkdown] = useState("");
   const [error, setError] = useState("");
+  const [branding, setBranding] = useState<Branding>(EMPTY_BRANDING);
+  const logoInput = useRef<HTMLInputElement>(null);
   const cancelled = useRef(false);
 
   useEffect(() => {
@@ -131,12 +135,12 @@ export function DocumentBuilder({
   };
 
   const downloadDocx = async () => {
-    const blob = await markdownToDocxBlob({ title, subtitle, markdown });
+    const blob = await markdownToDocxBlob({ title, subtitle, markdown, branding });
     downloadBlob(blob, `${safeFilename(title)}.docx`);
   };
 
   const downloadPdf = () => {
-    const blob = markdownToPdfBlob({ title, subtitle, markdown });
+    const blob = markdownToPdfBlob({ title, subtitle, markdown, branding });
     downloadBlob(blob, `${safeFilename(title)}.pdf`);
   };
 
@@ -167,6 +171,76 @@ export function DocumentBuilder({
                   <SelectItem value="feasibility_study">Feasibility study</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Company letterhead</Label>
+              <div className="flex items-center gap-3 rounded-lg border border-border p-3">
+                {branding.logo ? (
+                  <img
+                    src={branding.logo.dataUrl}
+                    alt="Company logo preview"
+                    className="h-12 w-12 rounded border border-border object-contain"
+                  />
+                ) : (
+                  <span className="flex size-12 items-center justify-center rounded border border-dashed border-border text-muted-foreground">
+                    <ImagePlus className="size-5" />
+                  </span>
+                )}
+                <div className="flex-1 space-y-1">
+                  <p className="text-sm font-medium">
+                    {branding.logo ? "Logo added" : "Upload your logo"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    PNG or JPG. Used on the cover page and every page header.
+                  </p>
+                </div>
+                <input
+                  ref={logoInput}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif"
+                  className="hidden"
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (!file) return;
+                    try {
+                      const logo = await readLogoFile(file);
+                      setBranding((prev) => ({ ...prev, logo }));
+                    } catch (caught) {
+                      toast.error(caught instanceof Error ? caught.message : "Could not read image");
+                    }
+                  }}
+                />
+                <Button type="button" variant="outline" size="sm" onClick={() => logoInput.current?.click()}>
+                  {branding.logo ? "Replace" : "Upload"}
+                </Button>
+                {branding.logo && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setBranding((prev) => ({ ...prev, logo: null }))}
+                  >
+                    <X className="size-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Input
+                  placeholder="Business name"
+                  value={branding.companyName}
+                  onChange={(event) =>
+                    setBranding((prev) => ({ ...prev, companyName: event.target.value }))
+                  }
+                />
+                <Input
+                  placeholder="Address · email · phone"
+                  value={branding.contact}
+                  onChange={(event) =>
+                    setBranding((prev) => ({ ...prev, contact: event.target.value }))
+                  }
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="brief">Brief</Label>
