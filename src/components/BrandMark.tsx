@@ -1,4 +1,3 @@
-const logo = "/__l5e/assets-v1/a66a6677-da2f-47ac-8b79-0dc2b9f5882a/black-r-logo.png";
 import { cn } from "@/lib/utils";
 
 export function BrandMark({
@@ -14,11 +13,11 @@ export function BrandMark({
     <div className={cn("flex items-center gap-2.5", className)}>
       <span
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-md",
+          "flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[10px]",
           invert ? "bg-sidebar-accent" : "bg-brand-black",
         )}
       >
-        <img src={logo} alt="Black R AI" className="size-6 object-contain" />
+        <img src="/black-r-mark.svg" alt="Black R AI" className="size-full object-contain" />
       </span>
       {showWordmark && (
         <span className="flex flex-col leading-none">

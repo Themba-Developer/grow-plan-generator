@@ -1,6 +1,7 @@
 import {
   AlignmentType,
   Document,
+  ExternalHyperlink,
   Header,
   HeadingLevel,
   ImageRun,
@@ -29,6 +30,7 @@ import {
   pdfImageFormat,
   type Branding,
 } from "./doc-branding";
+import { normalizeDocumentDesign, type DocumentDesign } from "./doc-design";
 
 export type DocBlock =
   | { kind: "h1" | "h2" | "h3"; text: string }
@@ -36,11 +38,32 @@ export type DocBlock =
   | { kind: "bullet" | "numbered"; text: string }
   | { kind: "table"; rows: string[][] };
 
+export type ExportVisual = {
+  title: string;
+  kind: string;
+  dataUrl: string;
+  revisedPrompt?: string;
+  placementHeading?: string;
+};
+
 const RED = "C8102E";
 const BLACK = "111111";
 const GREY = "5A5A5A";
 const HEAD_FONT = "Arial";
 const BODY_FONT = "Georgia";
+
+function hexToRgb(hex: string): [number, number, number] {
+  const cleaned = hex.replace(/^#/, "").padEnd(6, "0").slice(0, 6);
+  return [
+    Number.parseInt(cleaned.slice(0, 2), 16),
+    Number.parseInt(cleaned.slice(2, 4), 16),
+    Number.parseInt(cleaned.slice(4, 6), 16),
+  ];
+}
+
+function pdfFont(font: DocumentDesign["headingFont"] | DocumentDesign["bodyFont"]) {
+  return font === "Georgia" ? "times" : "helvetica";
+}
 
 function splitRow(line: string) {
   return line
@@ -123,7 +146,26 @@ export function parseMarkdown(markdown: string): DocBlock[] {
 }
 
 function stripMarks(text: string) {
-  return text.replace(/\*\*/g, "").replace(/`/g, "").replace(/\*/g, "");
+  return text
+    .replace(/\[([^\]]+)]\((https?:\/\/[^)]+)\)/g, "$1 ($2)")
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/\*/g, "");
+}
+
+function headingKey(text: string) {
+  return stripMarks(text)
+    .toLocaleLowerCase()
+    .replace(/^\s*\d+[.)-]?\s*/, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function visualMatchesHeading(visual: ExportVisual, heading: string) {
+  if (!visual.placementHeading) return false;
+  const requested = headingKey(visual.placementHeading);
+  const actual = headingKey(heading);
+  return requested === actual || requested.includes(actual) || actual.includes(requested);
 }
 
 function inlineRuns(
@@ -131,8 +173,26 @@ function inlineRuns(
   options?: { bold?: boolean; color?: string; size?: number; font?: string },
 ) {
   const cleaned = text.replace(/`/g, "");
-  const parts = cleaned.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+  const parts = cleaned
+    .split(/(\*\*[^*]+\*\*|\[[^\]]+]\(https?:\/\/[^)]+\)|https?:\/\/[^\s]+)/g)
+    .filter(Boolean);
   return parts.map((part) => {
+    const markdownLink = /^\[([^\]]+)]\((https?:\/\/[^)]+)\)$/.exec(part);
+    const bareLink = /^https?:\/\/[^\s]+$/.test(part) ? part : null;
+    const link = markdownLink?.[2] || bareLink;
+    if (link) {
+      return new ExternalHyperlink({
+        link,
+        children: [
+          new TextRun({
+            text: markdownLink?.[1] || bareLink || link,
+            style: "Hyperlink",
+            size: options?.size ?? 22,
+            font: options?.font ?? BODY_FONT,
+          }),
+        ],
+      });
+    }
     const bold = part.startsWith("**") && part.endsWith("**");
     return new TextRun({
       text: bold ? part.slice(2, -2) : part.replace(/\*/g, ""),
@@ -144,9 +204,12 @@ function inlineRuns(
   });
 }
 
-function docxTable(rows: string[][]) {
+function docxTable(
+  rows: string[][],
+  theme: { secondary: string; ink: string; headingFont: string },
+) {
   const columnCount = Math.max(...rows.map((row) => row.length));
-  const totalWidth = 9360;
+  const totalWidth = 9000;
   const columnWidth = Math.floor(totalWidth / columnCount);
   const border = { style: BorderStyle.SINGLE, size: 1, color: "D5D5D5" };
   const borders = { top: border, bottom: border, left: border, right: border };
@@ -169,7 +232,7 @@ function docxTable(rows: string[][]) {
                 ...(rowIndex === 0
                   ? {
                       shading: {
-                        fill: "F4F4F4",
+                        fill: theme.secondary,
                         type: ShadingType.CLEAR,
                         color: "auto",
                       },
@@ -181,8 +244,8 @@ function docxTable(rows: string[][]) {
                     children: inlineRuns(value, {
                       bold: rowIndex === 0,
                       size: 19,
-                      font: HEAD_FONT,
-                      color: rowIndex === 0 ? BLACK : BLACK,
+                      font: theme.headingFont,
+                      color: theme.ink,
                     }),
                   }),
                 ],
@@ -206,18 +269,51 @@ export async function markdownToDocxBlob(args: {
   subtitle: string;
   markdown: string;
   branding?: Branding;
+  visuals?: ExportVisual[];
+  design?: DocumentDesign;
+  coverArt?: ExportVisual;
+  pageFormat?: "a4" | "letter";
 }) {
   const branding = args.branding ?? EMPTY_BRANDING;
+  const design = normalizeDocumentDesign(args.design);
+  const RED = design.accentColor;
+  const BLACK = design.inkColor;
+  const GREY = design.mutedColor;
+  const HEAD_FONT = design.headingFont;
+  const BODY_FONT = design.bodyFont;
   const blocks = parseMarkdown(args.markdown);
   const children: (Paragraph | Table)[] = [];
+  const coverAlignment =
+    design.coverLayout === "minimal_luxury" ? AlignmentType.CENTER : AlignmentType.LEFT;
 
   // ---------- Cover page ----------
-  if (branding.logo) {
-    const size = fitLogo(branding.logo, 170, 110);
+  if (args.coverArt) {
     children.push(
       new Paragraph({
         alignment: AlignmentType.CENTER,
-        spacing: { before: 1600, after: 320 },
+        spacing: { before: 0, after: 260 },
+        children: [
+          new ImageRun({
+            type: docxImageType(args.coverArt.dataUrl),
+            data: dataUrlToUint8Array(args.coverArt.dataUrl),
+            transformation: { width: 620, height: 350 },
+            altText: {
+              title: "Cover artwork",
+              description: args.coverArt.revisedPrompt || design.creativeDirection,
+              name: "cover-artwork",
+            },
+          }),
+        ],
+      }),
+    );
+  }
+
+  if (branding.logo) {
+    const size = fitLogo(branding.logo, args.coverArt ? 125 : 170, args.coverArt ? 65 : 110);
+    children.push(
+      new Paragraph({
+        alignment: coverAlignment,
+        spacing: { before: args.coverArt ? 80 : 1600, after: 220 },
         children: [
           new ImageRun({
             type: docxImageType(branding.logo.dataUrl),
@@ -233,13 +329,13 @@ export async function markdownToDocxBlob(args: {
       }),
     );
   } else {
-    children.push(new Paragraph({ spacing: { before: 1800 }, children: [] }));
+    children.push(new Paragraph({ spacing: { before: args.coverArt ? 80 : 1800 }, children: [] }));
   }
 
   if (branding.companyName) {
     children.push(
       new Paragraph({
-        alignment: AlignmentType.CENTER,
+        alignment: coverAlignment,
         spacing: { after: 160 },
         children: [
           new TextRun({
@@ -257,15 +353,21 @@ export async function markdownToDocxBlob(args: {
 
   children.push(
     new Paragraph({
-      alignment: AlignmentType.CENTER,
+      alignment: coverAlignment,
       spacing: { after: 200 },
       border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: RED, space: 12 } },
       children: [
-        new TextRun({ text: args.title, bold: true, color: BLACK, size: 48, font: HEAD_FONT }),
+        new TextRun({
+          text: args.title,
+          bold: true,
+          color: design.primaryColor,
+          size: 48,
+          font: HEAD_FONT,
+        }),
       ],
     }),
     new Paragraph({
-      alignment: AlignmentType.CENTER,
+      alignment: coverAlignment,
       spacing: { before: 240, after: 120 },
       children: [new TextRun({ text: args.subtitle, color: GREY, size: 26, font: BODY_FONT })],
     }),
@@ -274,26 +376,29 @@ export async function markdownToDocxBlob(args: {
   if (branding.contact) {
     children.push(
       new Paragraph({
-        alignment: AlignmentType.CENTER,
+        alignment: coverAlignment,
         spacing: { after: 120 },
-        children: [
-          new TextRun({ text: branding.contact, color: GREY, size: 20, font: BODY_FONT }),
-        ],
+        children: [new TextRun({ text: branding.contact, color: GREY, size: 20, font: BODY_FONT })],
       }),
     );
   }
 
   children.push(
     new Paragraph({
-      alignment: AlignmentType.CENTER,
+      alignment: coverAlignment,
       spacing: { before: 400 },
       children: [
-        new TextRun({ text: `Prepared ${preparedOn()}`, color: "808080", size: 20, font: BODY_FONT }),
+        new TextRun({
+          text: `Prepared ${preparedOn()}`,
+          color: "808080",
+          size: 20,
+          font: BODY_FONT,
+        }),
       ],
     }),
     new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { before: 1200 },
+      alignment: coverAlignment,
+      spacing: { before: args.coverArt ? 260 : 1200 },
       children: [
         new TextRun({
           text: "Strictly private and confidential",
@@ -308,9 +413,10 @@ export async function markdownToDocxBlob(args: {
   );
 
   // ---------- Table of contents ----------
-  const tocEntries = blocks.filter(
-    (block) => block.kind === "h1" || block.kind === "h2",
-  ) as { kind: "h1" | "h2"; text: string }[];
+  const tocEntries = blocks.filter((block) => block.kind === "h1" || block.kind === "h2") as {
+    kind: "h1" | "h2";
+    text: string;
+  }[];
 
   if (tocEntries.length > 1) {
     children.push(
@@ -349,13 +455,77 @@ export async function markdownToDocxBlob(args: {
   }
 
   // ---------- Body ----------
+  const pendingVisuals = [...(args.visuals ?? [])];
+  const sectionTotal = blocks.filter((block) => block.kind === "h1" || block.kind === "h2").length;
+  const visualInterval = Math.max(1, Math.floor(sectionTotal / (pendingVisuals.length + 1)));
+  let sectionNumber = 0;
+  let visualNumber = 0;
+
+  const appendDocxVisual = (visual: ExportVisual) => {
+    visualNumber += 1;
+    children.push(
+      new Paragraph({
+        spacing: { before: 260, after: 140 },
+        children: [
+          new TextRun({
+            text: visual.title,
+            bold: true,
+            size: 23,
+            font: HEAD_FONT,
+            color: design.primaryColor,
+          }),
+        ],
+      }),
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 180 },
+        children: [
+          new ImageRun({
+            type: docxImageType(visual.dataUrl),
+            data: dataUrlToUint8Array(visual.dataUrl),
+            transformation: { width: 560, height: 373 },
+            altText: {
+              title: visual.title,
+              description: visual.revisedPrompt || visual.title,
+              name: `visual-${visualNumber}`,
+            },
+          }),
+        ],
+      }),
+    );
+    if (visual.kind === "layout") {
+      children.push(
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 180 },
+          children: [
+            new TextRun({
+              text: "CONCEPTUAL - NOT FOR CONSTRUCTION. Licensed professional review required.",
+              bold: true,
+              color: RED,
+              size: 18,
+              font: HEAD_FONT,
+            }),
+          ],
+        }),
+      );
+    }
+  };
+
   for (const block of blocks) {
     if (block.kind === "table") {
-      children.push(docxTable(block.rows));
+      children.push(
+        docxTable(block.rows, {
+          secondary: design.secondaryColor,
+          ink: BLACK,
+          headingFont: HEAD_FONT,
+        }),
+      );
       children.push(new Paragraph({ spacing: { after: 200 }, children: [] }));
       continue;
     }
     if (block.kind === "h1" || block.kind === "h2") {
+      sectionNumber += 1;
       children.push(
         new Paragraph({
           heading: block.kind === "h1" ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
@@ -369,6 +539,16 @@ export async function markdownToDocxBlob(args: {
           }),
         }),
       );
+      let visualIndex = pendingVisuals.findIndex((visual) =>
+        visualMatchesHeading(visual, block.text),
+      );
+      if (visualIndex < 0 && sectionNumber % visualInterval === 0) {
+        visualIndex = pendingVisuals.findIndex((visual) => !visual.placementHeading);
+      }
+      if (visualIndex >= 0) {
+        const [visual] = pendingVisuals.splice(visualIndex, 1);
+        if (visual) appendDocxVisual(visual);
+      }
       continue;
     }
     if (block.kind === "h3") {
@@ -386,7 +566,7 @@ export async function markdownToDocxBlob(args: {
         new Paragraph({
           numbering: { reference: block.kind === "bullet" ? "brBullets" : "brNumbers", level: 0 },
           spacing: { after: 100, line: 300 },
-          children: inlineRuns(block.text),
+          children: inlineRuns(block.text, { color: BLACK, font: BODY_FONT }),
         }),
       );
       continue;
@@ -395,9 +575,23 @@ export async function markdownToDocxBlob(args: {
       new Paragraph({
         alignment: AlignmentType.JUSTIFIED,
         spacing: { after: 200, line: 320 },
-        children: inlineRuns(block.text),
+        children: inlineRuns(block.text, { color: BLACK, font: BODY_FONT }),
       }),
     );
+  }
+
+  if (pendingVisuals.length) {
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+    children.push(
+      new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        children: [new TextRun({ text: "Visual Appendix", bold: true, size: 32, font: HEAD_FONT })],
+      }),
+    );
+    for (const [index, visual] of pendingVisuals.entries()) {
+      if (index > 0) children.push(new Paragraph({ children: [new PageBreak()] }));
+      appendDocxVisual(visual);
+    }
   }
 
   // ---------- Letterhead header ----------
@@ -422,13 +616,20 @@ export async function markdownToDocxBlob(args: {
     ? `\t${branding.companyName}${branding.contact ? ` · ${branding.contact}` : ""}`
     : `\t${args.title}`;
   headerRuns.push(
-    new TextRun({ text: headerLabel, color: GREY, size: 17, font: HEAD_FONT }),
+    new TextRun({ text: headerLabel, color: design.primaryColor, size: 17, font: HEAD_FONT }),
   );
 
   headerChildren.push(
     new Paragraph({
       tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],
-      border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: RED, space: 6 } },
+      border: {
+        bottom: {
+          style: BorderStyle.SINGLE,
+          size: design.letterheadStyle === "top_band" ? 18 : 8,
+          color: design.letterheadStyle === "top_band" ? design.primaryColor : RED,
+          space: 6,
+        },
+      },
       spacing: { after: 120 },
       children: headerRuns,
     }),
@@ -500,7 +701,10 @@ export async function markdownToDocxBlob(args: {
         properties: {
           titlePage: true,
           page: {
-            size: { width: 12240, height: 15840 },
+            size:
+              args.pageFormat === "letter"
+                ? { width: 12240, height: 15840 }
+                : { width: 11906, height: 16838 },
             margin: { top: 1560, right: 1440, bottom: 1440, left: 1440, header: 720, footer: 620 },
           },
         },
@@ -545,10 +749,22 @@ export function markdownToPdfBlob(args: {
   subtitle: string;
   markdown: string;
   branding?: Branding;
+  visuals?: ExportVisual[];
+  design?: DocumentDesign;
+  coverArt?: ExportVisual;
+  pageFormat?: "a4" | "letter";
 }) {
   const branding = args.branding ?? EMPTY_BRANDING;
+  const design = normalizeDocumentDesign(args.design);
+  const primary = hexToRgb(design.primaryColor);
+  const secondary = hexToRgb(design.secondaryColor);
+  const accent = hexToRgb(design.accentColor);
+  const ink = hexToRgb(design.inkColor);
+  const muted = hexToRgb(design.mutedColor);
+  const headingFont = pdfFont(design.headingFont);
+  const bodyFont = pdfFont(design.bodyFont);
   const blocks = parseMarkdown(args.markdown);
-  const pdf = new jsPDF({ unit: "pt", format: "letter" });
+  const pdf = new jsPDF({ unit: "pt", format: args.pageFormat ?? "a4" });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
   const margin = 64;
@@ -558,9 +774,9 @@ export function markdownToPdfBlob(args: {
 
   const footer = () => {
     const page = pdf.getNumberOfPages();
-    pdf.setFont("helvetica", "normal");
+    pdf.setFont(bodyFont, "normal");
     pdf.setFontSize(8);
-    pdf.setTextColor(150);
+    pdf.setTextColor(muted[0], muted[1], muted[2]);
     pdf.text(
       `${branding.companyName || "Black R AI"}  |  ${page}`,
       pageWidth / 2,
@@ -570,6 +786,13 @@ export function markdownToPdfBlob(args: {
   };
 
   const letterhead = () => {
+    if (design.letterheadStyle === "top_band") {
+      pdf.setFillColor(primary[0], primary[1], primary[2]);
+      pdf.rect(0, 0, pageWidth, 14, "F");
+    } else if (design.letterheadStyle === "asymmetric") {
+      pdf.setFillColor(accent[0], accent[1], accent[2]);
+      pdf.rect(0, 0, 12, 76, "F");
+    }
     let textLeft = margin;
     if (branding.logo) {
       const size = fitLogo(branding.logo, 70, 34);
@@ -583,19 +806,19 @@ export function markdownToPdfBlob(args: {
       );
       textLeft = margin + size.width + 10;
     }
-    pdf.setFont("helvetica", "bold");
+    pdf.setFont(headingFont, "bold");
     pdf.setFontSize(9);
-    pdf.setTextColor(40);
+    pdf.setTextColor(ink[0], ink[1], ink[2]);
     pdf.text((branding.companyName || args.title).toUpperCase(), textLeft, 50, {
       maxWidth: maxWidth - (textLeft - margin),
     });
     if (branding.contact) {
-      pdf.setFont("helvetica", "normal");
+      pdf.setFont(bodyFont, "normal");
       pdf.setFontSize(7.5);
-      pdf.setTextColor(120);
+      pdf.setTextColor(muted[0], muted[1], muted[2]);
       pdf.text(branding.contact, textLeft, 62, { maxWidth: maxWidth - (textLeft - margin) });
     }
-    pdf.setDrawColor(200, 16, 46);
+    pdf.setDrawColor(accent[0], accent[1], accent[2]);
     pdf.setLineWidth(1.2);
     pdf.line(margin, 74, pageWidth - margin, 74);
   };
@@ -624,9 +847,9 @@ export function markdownToPdfBlob(args: {
     },
   ) => {
     const clean = stripMarks(text);
-    pdf.setFont(options.family ?? "times", options.style);
+    pdf.setFont(options.family ?? bodyFont, options.style);
     pdf.setFontSize(options.size);
-    const color = options.color ?? [17, 17, 17];
+    const color = options.color ?? ink;
     pdf.setTextColor(color[0], color[1], color[2]);
     const indent = options.indent ?? 0;
     const lines = pdf.splitTextToSize(clean, maxWidth - indent) as string[];
@@ -640,84 +863,111 @@ export function markdownToPdfBlob(args: {
   };
 
   // ---------- Cover ----------
-  let coverY = 170;
+  pdf.setFillColor(secondary[0], secondary[1], secondary[2]);
+  pdf.rect(0, 0, pageWidth, pageHeight, "F");
+
+  let coverY = 86;
+  if (args.coverArt) {
+    const framed =
+      design.coverLayout === "geometric_frame" || design.coverLayout === "minimal_luxury";
+    const artX = framed ? 36 : 0;
+    const artY = framed ? 34 : 0;
+    const artWidth = framed ? pageWidth - 72 : pageWidth;
+    const artHeight = framed ? 300 : design.coverLayout === "full_bleed" ? 380 : 340;
+    pdf.addImage(
+      args.coverArt.dataUrl,
+      pdfImageFormat(args.coverArt.dataUrl),
+      artX,
+      artY,
+      artWidth,
+      artHeight,
+    );
+    coverY = artY + artHeight + 34;
+  } else {
+    pdf.setFillColor(primary[0], primary[1], primary[2]);
+    pdf.rect(0, 0, pageWidth, 205, "F");
+    pdf.setFillColor(accent[0], accent[1], accent[2]);
+    pdf.rect(margin, 205, 112, 8, "F");
+    coverY = 252;
+  }
+
+  const coverX = margin;
+  const coverTextWidth = maxWidth - 12;
   if (branding.logo) {
-    const size = fitLogo(branding.logo, 190, 110);
+    const size = fitLogo(branding.logo, 112, 54);
     pdf.addImage(
       branding.logo.dataUrl,
       pdfImageFormat(branding.logo.dataUrl),
-      (pageWidth - size.width) / 2,
+      coverX,
       coverY,
       size.width,
       size.height,
     );
-    coverY += size.height + 46;
-  } else {
-    coverY = 230;
+    coverY += size.height + 18;
   }
 
   if (branding.companyName) {
-    pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(12);
-    pdf.setTextColor(200, 16, 46);
-    pdf.text(branding.companyName.toUpperCase(), pageWidth / 2, coverY, { align: "center" });
-    coverY += 30;
+    pdf.setFont(headingFont, "bold");
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(accent[0], accent[1], accent[2]);
+    pdf.text(branding.companyName.toUpperCase(), coverX, coverY, { maxWidth: coverTextWidth });
+    coverY += 22;
   }
 
-  pdf.setFont("helvetica", "bold");
-  pdf.setFontSize(25);
-  pdf.setTextColor(17, 17, 17);
-  const titleLines = pdf.splitTextToSize(args.title, maxWidth - 40) as string[];
+  pdf.setFont(headingFont, "bold");
+  pdf.setFontSize(args.title.length > 75 ? 23 : 28);
+  pdf.setTextColor(ink[0], ink[1], ink[2]);
+  const titleLines = pdf.splitTextToSize(args.title, coverTextWidth) as string[];
   for (const line of titleLines) {
-    pdf.text(line, pageWidth / 2, coverY, { align: "center" });
-    coverY += 32;
+    pdf.text(line, coverX, coverY);
+    coverY += args.title.length > 75 ? 28 : 34;
   }
 
-  pdf.setDrawColor(200, 16, 46);
-  pdf.setLineWidth(1.5);
-  pdf.line(pageWidth / 2 - 70, coverY + 4, pageWidth / 2 + 70, coverY + 4);
-  coverY += 34;
+  pdf.setFillColor(accent[0], accent[1], accent[2]);
+  pdf.rect(coverX, coverY + 3, 86, 4, "F");
+  coverY += 28;
 
-  pdf.setFont("times", "normal");
-  pdf.setFontSize(13);
-  pdf.setTextColor(70);
-  const subtitleLines = pdf.splitTextToSize(args.subtitle, maxWidth - 80) as string[];
+  pdf.setFont(bodyFont, "normal");
+  pdf.setFontSize(12.5);
+  pdf.setTextColor(muted[0], muted[1], muted[2]);
+  const subtitleLines = pdf.splitTextToSize(args.subtitle, coverTextWidth) as string[];
   for (const line of subtitleLines) {
-    pdf.text(line, pageWidth / 2, coverY, { align: "center" });
-    coverY += 20;
+    pdf.text(line, coverX, coverY);
+    coverY += 18;
   }
 
   if (branding.contact) {
+    pdf.setFont(bodyFont, "normal");
     pdf.setFontSize(10);
-    pdf.setTextColor(110);
-    pdf.text(branding.contact, pageWidth / 2, coverY + 14, { align: "center", maxWidth });
+    pdf.setTextColor(muted[0], muted[1], muted[2]);
+    pdf.text(branding.contact, coverX, coverY + 14, { maxWidth: coverTextWidth });
     coverY += 30;
   }
 
+  pdf.setFont(bodyFont, "normal");
   pdf.setFontSize(10);
-  pdf.setTextColor(130);
-  pdf.text(`Prepared ${preparedOn()}`, pageWidth / 2, coverY + 24, { align: "center" });
-  pdf.setFont("times", "italic");
+  pdf.setTextColor(muted[0], muted[1], muted[2]);
+  pdf.text(`Prepared ${preparedOn()}`, coverX, Math.min(coverY + 24, pageHeight - 76));
+  pdf.setFont(bodyFont, "italic");
   pdf.setFontSize(9);
-  pdf.setTextColor(150);
-  pdf.text("Strictly private and confidential", pageWidth / 2, pageHeight - 90, {
-    align: "center",
-  });
+  pdf.setTextColor(muted[0], muted[1], muted[2]);
+  pdf.text("STRICTLY PRIVATE AND CONFIDENTIAL", coverX, pageHeight - 38);
 
   // ---------- Table of contents ----------
-  const tocEntries = blocks.filter(
-    (block) => block.kind === "h1" || block.kind === "h2",
-  ) as { kind: "h1" | "h2"; text: string }[];
+  const tocEntries = blocks.filter((block) => block.kind === "h1" || block.kind === "h2") as {
+    kind: "h1" | "h2";
+    text: string;
+  }[];
 
   if (tocEntries.length > 1) {
     newPage();
     write("Table of Contents", {
       size: 17,
       style: "bold",
-      family: "helvetica",
+      family: headingFont,
       gap: 6,
     });
-    pdf.setDrawColor(200, 16, 46);
+    pdf.setDrawColor(accent[0], accent[1], accent[2]);
     pdf.setLineWidth(1);
     pdf.line(margin, y - 6, pageWidth - margin, y - 6);
     y += 10;
@@ -725,7 +975,7 @@ export function markdownToPdfBlob(args: {
       write(stripMarks(entry.text), {
         size: 10.5,
         style: entry.kind === "h1" ? "bold" : "normal",
-        color: entry.kind === "h1" ? [17, 17, 17] : [90, 90, 90],
+        color: entry.kind === "h1" ? ink : muted,
         gap: 1,
         indent: entry.kind === "h2" ? 18 : 0,
       });
@@ -734,19 +984,66 @@ export function markdownToPdfBlob(args: {
 
   newPage();
 
+  const pendingPdfVisuals = [...(args.visuals ?? [])];
+  const pdfSectionTotal = blocks.filter(
+    (block) => block.kind === "h1" || block.kind === "h2",
+  ).length;
+  const pdfVisualInterval = Math.max(
+    1,
+    Math.floor(pdfSectionTotal / (pendingPdfVisuals.length + 1)),
+  );
+  let pdfSectionNumber = 0;
+
+  const appendPdfVisual = (visual: ExportVisual) => {
+    const imageWidth = maxWidth;
+    const imageHeight = imageWidth * (2 / 3);
+    ensure(imageHeight + 68);
+    write(visual.title, { size: 11.5, style: "bold", family: headingFont, gap: 10 });
+    ensure(imageHeight + 24);
+    pdf.addImage(
+      visual.dataUrl,
+      pdfImageFormat(visual.dataUrl),
+      margin,
+      y,
+      imageWidth,
+      imageHeight,
+    );
+    y += imageHeight + 14;
+    if (visual.kind === "layout") {
+      write("CONCEPTUAL - NOT FOR CONSTRUCTION. Licensed professional review required.", {
+        size: 9,
+        style: "bold",
+        family: headingFont,
+        color: accent,
+        gap: 8,
+      });
+    }
+  };
+
   for (const block of blocks) {
     if (block.kind === "h1" || block.kind === "h2") {
+      pdfSectionNumber += 1;
       ensure(70);
       write(block.text, {
         size: block.kind === "h1" ? 16 : 13.5,
         style: "bold",
-        family: "helvetica",
+        family: headingFont,
         gap: 4,
       });
-      pdf.setDrawColor(200, 16, 46);
+      pdf.setDrawColor(accent[0], accent[1], accent[2]);
       pdf.setLineWidth(0.8);
       pdf.line(margin, y - 4, pageWidth - margin, y - 4);
       y += 10;
+      let visualIndex = pendingPdfVisuals.findIndex((visual) =>
+        visualMatchesHeading(visual, block.text),
+      );
+      if (visualIndex < 0 && pdfSectionNumber % pdfVisualInterval === 0) {
+        visualIndex = pendingPdfVisuals.findIndex((visual) => !visual.placementHeading);
+      }
+      if (visualIndex >= 0) {
+        const [visual] = pendingPdfVisuals.splice(visualIndex, 1);
+        if (visual) appendPdfVisual(visual);
+      }
       continue;
     }
     if (block.kind === "h3") {
@@ -754,8 +1051,8 @@ export function markdownToPdfBlob(args: {
       write(block.text, {
         size: 11.5,
         style: "bold",
-        family: "helvetica",
-        color: [200, 16, 46],
+        family: headingFont,
+        color: accent,
         gap: 6,
       });
       continue;
@@ -772,23 +1069,42 @@ export function markdownToPdfBlob(args: {
       const rows = block.rows.filter((row) => !isSeparatorRow(row.join("|")));
       const columnCount = Math.max(...rows.map((row) => row.length));
       const columnWidth = maxWidth / columnCount;
-      const rowHeight = 16;
       for (const [index, row] of rows.entries()) {
+        const tableFontSize = columnCount > 7 ? 6.8 : columnCount > 5 ? 7.5 : 8.5;
+        pdf.setFont(index === 0 ? headingFont : bodyFont, index === 0 ? "bold" : "normal");
+        pdf.setFontSize(tableFontSize);
+        const cellLines = Array.from({ length: columnCount }, (_, cell) => {
+          const value = stripMarks(row[cell] ?? "");
+          const lines = pdf.splitTextToSize(value, columnWidth - 10) as string[];
+          if (lines.length <= 6) return lines;
+          return [...lines.slice(0, 5), `${lines[5]?.slice(0, -1) ?? ""}…`];
+        });
+        const lineHeight = tableFontSize * 1.25;
+        const rowHeight = Math.max(
+          18,
+          Math.max(...cellLines.map((lines) => lines.length)) * lineHeight + 8,
+        );
         ensure(rowHeight + 4);
+        const rowTop = y - 10;
         if (index === 0) {
-          pdf.setFillColor(244, 244, 244);
-          pdf.rect(margin, y - 11, maxWidth, rowHeight, "F");
+          pdf.setFillColor(secondary[0], secondary[1], secondary[2]);
+          pdf.rect(margin, rowTop, maxWidth, rowHeight, "F");
+        } else if (index % 2 === 0) {
+          pdf.setFillColor(250, 250, 250);
+          pdf.rect(margin, rowTop, maxWidth, rowHeight, "F");
         }
         pdf.setDrawColor(215);
         pdf.setLineWidth(0.4);
-        pdf.line(margin, y + 5, pageWidth - margin, y + 5);
-        pdf.setFont("helvetica", index === 0 ? "bold" : "normal");
-        pdf.setFontSize(8.5);
-        pdf.setTextColor(30);
+        pdf.rect(margin, rowTop, maxWidth, rowHeight);
+        pdf.setTextColor(ink[0], ink[1], ink[2]);
         for (let cell = 0; cell < columnCount; cell += 1) {
-          const value = stripMarks(row[cell] ?? "");
-          const lines = pdf.splitTextToSize(value, columnWidth - 10) as string[];
-          pdf.text(lines[0] ?? "", margin + cell * columnWidth + 5, y);
+          const cellX = margin + cell * columnWidth;
+          if (cell > 0) pdf.line(cellX, rowTop, cellX, rowTop + rowHeight);
+          pdf.text(cellLines[cell] ?? [], cellX + 5, y);
+          const rawCell = stripMarks(row[cell] ?? "").trim();
+          if (/^https?:\/\/\S+$/.test(rawCell)) {
+            pdf.link(cellX + 4, rowTop + 2, columnWidth - 8, rowHeight - 4, { url: rawCell });
+          }
         }
         y += rowHeight;
       }
@@ -796,6 +1112,11 @@ export function markdownToPdfBlob(args: {
       continue;
     }
     write(block.text, { size: 10.5, style: "normal", gap: 9 });
+  }
+
+  for (const visual of pendingPdfVisuals) {
+    newPage();
+    appendPdfVisual(visual);
   }
 
   footer();

@@ -8,19 +8,39 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    let active = true;
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (!active || event === "INITIAL_SESSION") return;
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
       setLoading(false);
     });
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      setLoading(false);
-    });
+    void (async () => {
+      const { data: userData, error } = await supabase.auth.getUser();
+      if (!active) return;
 
-    return () => sub.subscription.unsubscribe();
+      if (error || !userData.user) {
+        await supabase.auth.signOut({ scope: "local" });
+        if (!active) return;
+        setSession(null);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!active) return;
+      setSession(sessionData.session);
+      setUser(userData.user);
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   return { session, user, loading, signOut: () => supabase.auth.signOut() };

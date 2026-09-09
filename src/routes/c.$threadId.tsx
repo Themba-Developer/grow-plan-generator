@@ -37,13 +37,7 @@ function ThreadPage() {
   );
 }
 
-function ThreadChat({
-  threadId,
-  onTitle,
-}: {
-  threadId: string;
-  onTitle: (title: string) => void;
-}) {
+function ThreadChat({ threadId, onTitle }: { threadId: string; onTitle: (title: string) => void }) {
   const [messages, setMessages] = useState<UIMessage[] | null>(null);
 
   useEffect(() => {

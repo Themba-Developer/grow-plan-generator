@@ -4,6 +4,8 @@ export type BrandLogo = {
   width: number;
   /** natural pixel height */
   height: number;
+  /** dominant non-neutral logo colour, without a leading # */
+  dominantColor?: string;
 };
 
 export type Branding = {
@@ -23,8 +25,44 @@ export function readLogoFile(file: File): Promise<BrandLogo> {
       const dataUrl = String(reader.result);
       const image = new Image();
       image.onerror = () => reject(new Error("That file is not a valid image"));
-      image.onload = () =>
-        resolve({ dataUrl, width: image.naturalWidth || 300, height: image.naturalHeight || 300 });
+      image.onload = () => {
+        let dominantColor: string | undefined;
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = 48;
+          canvas.height = 48;
+          const context = canvas.getContext("2d", { willReadFrequently: true });
+          context?.drawImage(image, 0, 0, canvas.width, canvas.height);
+          const pixels = context?.getImageData(0, 0, canvas.width, canvas.height).data;
+          if (pixels) {
+            const buckets = new Map<string, number>();
+            for (let index = 0; index < pixels.length; index += 16) {
+              const red = pixels[index] ?? 0;
+              const green = pixels[index + 1] ?? 0;
+              const blue = pixels[index + 2] ?? 0;
+              const alpha = pixels[index + 3] ?? 0;
+              const max = Math.max(red, green, blue);
+              const min = Math.min(red, green, blue);
+              if (alpha < 160 || max > 242 || max - min < 24) continue;
+              const key = [red, green, blue]
+                .map((channel) => Math.round(channel / 32) * 32)
+                .map((channel) => Math.min(255, channel).toString(16).padStart(2, "0"))
+                .join("")
+                .toUpperCase();
+              buckets.set(key, (buckets.get(key) ?? 0) + 1);
+            }
+            dominantColor = [...buckets.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+          }
+        } catch {
+          // A logo is still usable when colour sampling is unavailable.
+        }
+        resolve({
+          dataUrl,
+          width: image.naturalWidth || 300,
+          height: image.naturalHeight || 300,
+          ...(dominantColor ? { dominantColor } : {}),
+        });
+      };
       image.src = dataUrl;
     };
     reader.readAsDataURL(file);

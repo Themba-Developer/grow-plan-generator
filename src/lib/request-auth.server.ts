@@ -39,8 +39,19 @@ export async function getUserFromRequest(request: Request) {
     auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
   });
 
-  const { data, error } = await supabase.auth.getClaims(token);
-  if (error || !data?.claims?.sub) return null;
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error) {
+    console.error("[Supabase auth] API token verification failed", {
+      name: error.name,
+      status: error.status,
+      code: error.code,
+      message: error.message,
+    });
+    if (!error.status || error.status >= 500 || /fetch/i.test(error.name)) {
+      throw new Error("Supabase authentication is temporarily unavailable. Please try again.");
+    }
+  }
+  if (error || !data.user) return null;
 
-  return { supabase, userId: data.claims.sub as string };
+  return { supabase, userId: data.user.id };
 }

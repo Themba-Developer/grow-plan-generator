@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" role="img" aria-labelledby="title">
+  <title id="title">Black R AI</title>
+  <rect width="40" height="40" rx="10" fill="#111111"/>
+  <path d="M12 9h9.3c5.1 0 8.2 2.7 8.2 7.1 0 3.2-1.8 5.5-4.8 6.5L30.5 31h-7l-4.8-7.4H18V31h-6V9Zm6 5v5h2.8c1.8 0 2.7-.9 2.7-2.5S22.6 14 20.8 14H18Z" fill="#ef1018"/>
+</svg>

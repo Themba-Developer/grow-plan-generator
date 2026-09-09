@@ -1,13 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { convertToModelMessages, streamText, type UIMessage } from "ai";
-import {
-  createLovableAiGatewayProvider,
-  getLovableAiGatewayResponseHeaders,
-  getLovableAiGatewayRunId,
-  withLovableAiGatewayRunIdHeader,
-} from "@/lib/ai-gateway.server";
-import { CHAT_MODEL, SYSTEM_PROMPT } from "@/lib/prompts.server";
+import { SYSTEM_PROMPT } from "@/lib/prompts.server";
+import { routedModel } from "@/lib/model-router.server";
 import { getUserFromRequest } from "@/lib/request-auth.server";
+import { friendlyAiError } from "@/lib/ai-errors";
 
 type ChatRequestBody = { messages?: unknown; threadId?: unknown };
 
@@ -15,7 +11,13 @@ export const Route = createFileRoute("/api/chat")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const auth = await getUserFromRequest(request);
+        let auth;
+        try {
+          auth = await getUserFromRequest(request);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Authentication unavailable";
+          return new Response(message, { status: 503 });
+        }
         if (!auth) return new Response("Unauthorized", { status: 401 });
 
         const body = (await request.json()) as ChatRequestBody;
@@ -25,8 +27,14 @@ export const Route = createFileRoute("/api/chat")({
           return new Response("Messages are required", { status: 400 });
         }
 
-        const apiKey = process.env["LOVABLE_API_KEY"];
-        if (!apiKey) return new Response("AI is not configured", { status: 500 });
+        const hasGemini = Boolean(process.env["GEMINI_API_KEY"]?.trim());
+        const hasOpenAi = Boolean(process.env["OPENAI_API_KEY"]?.trim());
+        if (!hasGemini && !hasOpenAi) {
+          return new Response(
+            "AI is not configured. Add GEMINI_API_KEY or OPENAI_API_KEY as a server secret.",
+            { status: 500 },
+          );
+        }
 
         if (threadId) {
           const { data: thread } = await auth.supabase
@@ -38,21 +46,21 @@ export const Route = createFileRoute("/api/chat")({
         }
 
         const uiMessages = messages as UIMessage[];
-        const initialRunId = getLovableAiGatewayRunId(request);
-        const gateway = createLovableAiGatewayProvider(apiKey, initialRunId);
+        const selectedModel = routedModel("research").model;
 
         const result = streamText({
-          model: gateway(CHAT_MODEL),
+          model: selectedModel,
           system: SYSTEM_PROMPT,
           messages: await convertToModelMessages(uiMessages),
+          providerOptions: {
+            openai: { reasoningEffort: "low", textVerbosity: "medium" },
+          },
           onError: ({ error }) => console.error("[chat] stream error", error),
         });
 
         const response = result.toUIMessageStreamResponse({
           originalMessages: uiMessages,
-          headers: getLovableAiGatewayResponseHeaders(undefined, {
-            ...(initialRunId ? { "X-Lovable-AIG-Run-ID": initialRunId } : {}),
-          }),
+          onError: (error) => friendlyAiError(error),
           onFinish: async ({ responseMessage }) => {
             if (!threadId) return;
             const last = uiMessages[uiMessages.length - 1];
@@ -84,8 +92,33 @@ export const Route = createFileRoute("/api/chat")({
             }
             if (!rows.length) return;
 
-            const { error } = await auth.supabase.from("messages").insert(rows as never);
-            if (error) console.error("[chat] failed to persist messages", error);
+            const messageIds = rows
+              .map((row) => row.sdk_message_id)
+              .filter((id): id is string => Boolean(id));
+            const existingIds = new Set<string>();
+
+            if (messageIds.length) {
+              const { data: existing, error: lookupError } = await auth.supabase
+                .from("messages")
+                .select("sdk_message_id")
+                .eq("thread_id", threadId)
+                .in("sdk_message_id", messageIds);
+              if (lookupError) {
+                console.error("[chat] failed to check persisted messages", lookupError);
+              } else {
+                for (const row of existing ?? []) {
+                  if (row.sdk_message_id) existingIds.add(row.sdk_message_id);
+                }
+              }
+            }
+
+            const pendingRows = rows.filter(
+              (row) => !row.sdk_message_id || !existingIds.has(row.sdk_message_id),
+            );
+            if (pendingRows.length) {
+              const { error } = await auth.supabase.from("messages").insert(pendingRows as never);
+              if (error) console.error("[chat] failed to persist messages", error);
+            }
 
             const { error: touchError } = await auth.supabase
               .from("threads")
@@ -95,7 +128,7 @@ export const Route = createFileRoute("/api/chat")({
           },
         });
 
-        return withLovableAiGatewayRunIdHeader(response, gateway);
+        return response;
       },
     },
   },
