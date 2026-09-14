@@ -18,6 +18,10 @@ export function friendlyAiError(error: unknown): string {
   const message = errorText(error);
 
   if (/aborted|aborterror|cancelled/i.test(message)) return "Generation was stopped.";
+  if (
+    /backend is not configured|missing supabase environment|supabase.*not configured/i.test(message)
+  )
+    return "The app server is missing its Supabase connection settings. Configure the Supabase URL and publishable key, then redeploy.";
   if (/high demand|service unavailable|\b503\b|overloaded/i.test(message))
     return "The AI service is temporarily busy. Automatic fallback was attempted; please retry in a moment.";
   if (/rate.?limit|\b429\b/i.test(message))

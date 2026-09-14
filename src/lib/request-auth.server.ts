@@ -22,9 +22,18 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
  * client that acts as that user (RLS applies).
  */
 export async function getUserFromRequest(request: Request) {
-  const url = process.env["SUPABASE_URL"];
-  const key = process.env["SUPABASE_PUBLISHABLE_KEY"];
-  if (!url || !key) throw new Error("Backend is not configured");
+  // The browser-facing values are safe to use here: a Supabase URL and
+  // publishable key are public identifiers, and RLS still authorises the user.
+  // Some hosts expose VITE_* values at build time but do not duplicate them as
+  // Worker runtime bindings, so accept either naming convention.
+  const url = process.env["SUPABASE_URL"] || import.meta.env["VITE_SUPABASE_URL"];
+  const key =
+    process.env["SUPABASE_PUBLISHABLE_KEY"] || import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"];
+  if (!url || !key) {
+    throw new Error(
+      "Backend is not configured. Add SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY (or their VITE_ equivalents).",
+    );
+  }
 
   const authHeader = request.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) return null;

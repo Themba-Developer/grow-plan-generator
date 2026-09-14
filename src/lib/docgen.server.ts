@@ -111,7 +111,8 @@ Requirements:
   };
 }
 
-type OutlineCandidate = Omit<Partial<Outline>, "visuals"> & {
+type OutlineCandidate = Omit<Partial<Outline>, "visuals" | "referenceProfile"> & {
+  referenceProfile?: string | undefined;
   visuals?: {
     title: string;
     prompt: string;
@@ -162,9 +163,9 @@ export async function buildOutline(args: {
   );
   const lead = routedModel("research");
   const prompt = outlinePrompt(args.docType, args.brief, research, {
-    jurisdiction: args.jurisdiction,
-    referenceName: args.referenceName,
-    referenceText: args.referenceText,
+    ...(args.jurisdiction ? { jurisdiction: args.jurisdiction } : {}),
+    ...(args.referenceName ? { referenceName: args.referenceName } : {}),
+    ...(args.referenceText ? { referenceText: args.referenceText } : {}),
   });
   const { text } = await generateText({
     model: lead.model,
