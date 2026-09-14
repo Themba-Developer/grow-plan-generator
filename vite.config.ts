@@ -18,7 +18,14 @@ export default defineConfig(({ command }) => ({
         },
       },
     }),
-    command === "build" ? nitro({ defaultPreset: "cloudflare-module" }) : null,
+    command === "build"
+      ? nitro({
+          defaultPreset: "cloudflare-module",
+          // Keep deploys deterministic and avoid a local-time date being one
+          // day ahead of Cloudflare's UTC compatibility-date validation.
+          compatibilityDate: "2026-09-14",
+        })
+      : null,
     viteReact(),
   ],
 }));
